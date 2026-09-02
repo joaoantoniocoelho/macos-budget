@@ -1,55 +1,56 @@
 # Finanças
 
-MVP local para controle financeiro mensal no macOS. Não tem login, servidor, cloud ou sincronização.
+A personal macOS app for monthly budgeting. Everything stays on your Mac: no accounts, no server, and no sync.
 
-## Stack e estrutura
+You track months, income, recurring bills, one-off purchases, and investments. **Gastos** is for recurring expenses. **Saídas** is for purchases and other one-off payments. Active recurrences are copied into each new month.
 
-- SwiftUI nativo (macOS 14+)
-- SQLite 3 do sistema, acessado diretamente pela API C
-- Swift Package Manager, sem pacotes externos
-- `Models.swift`: tipos e regras de apresentação
-- `Database.swift`: schema, consultas, categorias iniciais e backup
-- `AppStore.swift`: estado da interface e cálculos do mês
-- demais arquivos em `Sources/Financas`: telas SwiftUI
+Paying the card bill only moves items from **Na fatura** to **Pago**. It does not create a second expense.
 
-O modelo mantém meses, entradas, modelos de gastos recorrentes, lançamentos mensais e investimentos. Na interface, **Gastos** reúne somente despesas fixas e **Saídas** reúne compras e pagamentos pontuais. Gastos recorrentes ativos são instanciados ao criar um mês. Pagar a fatura apenas muda lançamentos de `Na fatura` para `Pago`; não cria uma despesa duplicada.
+The current balance starts from the amount you enter and updates as money actually moves: received income increases it; paid expenses and completed investments decrease it. Pending items and charges still on the invoice do not touch the account until they are paid.
 
-O saldo atual começa com o saldo informado e é conciliado automaticamente: entradas recebidas aumentam o saldo; gastos pagos e investimentos realizados reduzem o saldo. Pendências e compras ainda na fatura não movimentam a conta até o pagamento.
+Card recurrences with a due day move to **Na fatura** automatically when that day arrives (when you open the app). PIX, debit, and automatic debit stay pending until you mark them paid.
 
-## Como rodar
+The summary highlights current balance, pending charges, the invoice, and the leftover budget for variable spending (expected salary minus planned recurrences minus the investment goal). Use the eye button in the toolbar, or **⌘⇧H**, to hide amounts.
 
-Requer Xcode 16 ou superior. Na raiz do projeto:
+## Requirements
+
+- macOS 14 or later
+- Xcode 16 or later
+
+## Run
+
+From the project root:
 
 ```bash
 swift run Financas
 ```
 
-Também é possível abrir `Package.swift` no Xcode, selecionar o scheme **Financas** e executar com **⌘R**.
+Or open `Package.swift` in Xcode, select the **Financas** scheme, and press **⌘R**.
 
-## Banco SQLite
+## Data
 
-O banco fica em:
+The SQLite database lives at:
 
 ```text
 ~/Library/Application Support/Financas/financas.sqlite
 ```
 
-Na primeira execução, o app cria o schema e as categorias padrão, sem meses, saldos ou lançamentos. Em **Configurações** é possível mostrar o arquivo no Finder, exportar uma cópia e importar um backup.
+On first launch the app creates the schema and default categories. It does not seed months, balances, or transactions. In **Configurações** you can reveal the file in Finder, export a copy, or import a backup.
 
-O banco local e qualquer backup `.sqlite` ficam fora do repositório.
+The local database and any `.sqlite` backups are gitignored.
 
 ## Build
 
-Para compilar em modo release:
+Release binary:
 
 ```bash
 swift build -c release
 ```
 
-O executável fica em `.build/release/Financas`. Para gerar um `.app` local e colocá-lo em `dist/`, use:
+The executable is at `.build/release/Financas`. To wrap it as a local `.app` in `dist/`:
 
 ```bash
 ./scripts/build-app.sh
 ```
 
-O bundle resultante não é assinado para distribuição. Para compartilhar fora da sua máquina, configure assinatura e notarização no Xcode.
+That bundle is ad-hoc signed for local use. Shipping it to other Macs needs proper signing and notarization.
