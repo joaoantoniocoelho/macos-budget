@@ -1,4 +1,4 @@
-# Finanças
+# macos-budget
 
 A personal macOS app for monthly budgeting. Everything stays on your Mac: no accounts, no server, and no sync.
 
