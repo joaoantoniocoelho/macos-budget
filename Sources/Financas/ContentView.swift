@@ -72,9 +72,9 @@ struct DashboardView: View {
     @Environment(\.hideAmounts) private var hideAmounts
     @State private var editingBalance = false
     @State private var hoveredCategory:String?
-    private let detailColumns = [GridItem(.adaptive(minimum: 180), spacing: 12)]
+    private let columns = [GridItem(.adaptive(minimum: 250), spacing: 12)]
 
-    private struct CategorySpending: Identifiable {
+    private struct CategorySpending:Identifiable {
         let category:String
         let items:[Expense]
         var total:Double { items.reduce(0) { $0 + $1.amount } }
@@ -82,7 +82,7 @@ struct DashboardView: View {
     }
 
     private var spendingByCategory:[CategorySpending] {
-        let spent = store.expenses.filter { [.paid,.prepaid,.invoice].contains($0.status) }
+        let spent=store.expenses.filter { [.paid,.prepaid,.invoice].contains($0.status) }
         return Dictionary(grouping:spent,by:\.category)
             .map { CategorySpending(category:$0.key,items:$0.value.sorted { $0.amount > $1.amount }) }
             .sorted { $0.total > $1.total }
@@ -102,28 +102,20 @@ struct DashboardView: View {
                         Spacer()
                         Button("Editar saldos") { editingBalance=true }
                     }
-                    HStack(alignment: .top, spacing: 12) {
+                    LazyVGrid(columns:columns,spacing:12) {
                         MetricCard("Saldo atual", month.currentBalance, "wallet.bifold", color: month.currentBalance >= 0 ? .green : .red, size: .featured)
                         MetricCard("Pendentes", store.totals.pending, "clock", color: .orange, size: .featured)
                         MetricCard("Na fatura", store.totals.invoice, "creditcard", color: .orange, size: .featured)
-                        MetricCard("Disponível", store.totals.variableBudget, "leaf", color: store.totals.variableBudget >= 0 ? .green : .red, size: .featured, caption: "Salário previsto − recorrentes previstos − meta de investimento. Não é o saldo da conta.")
-                    }
-                    LazyVGrid(columns: detailColumns, spacing: 12) {
-                        MetricCard("Salário previsto", store.totals.fixedExpected, "calendar")
-                        MetricCard("Salário recebido", store.totals.fixedReceived, "checkmark.circle")
-                        MetricCard("Recorrentes previstos", store.totals.recurringExpected, "repeat")
-                        MetricCard("Recorrentes pagos", store.totals.recurringPaid, "checkmark.seal")
-                        MetricCard("Investimentos planejados", store.totals.investmentsPlanned, "target")
-                        MetricCard("Investimentos realizados", store.totals.investmentsActual, "chart.line.uptrend.xyaxis")
-                        MetricCard("Saídas pontuais", store.totals.variable, "cart")
+                        MetricCard("Salário previsto", store.totals.fixedExpected, "calendar", size:.featured)
+                        NextSalaryCard(salary:store.nextSalary())
                     }
                     GroupBox("Gastos por categoria") {
                         if spendingByCategory.isEmpty {
-                            ContentUnavailableView("Nenhum gasto realizado", systemImage:"chart.pie", description:Text("Gastos pagos ou na fatura aparecerão aqui."))
+                            ContentUnavailableView("Nenhum gasto realizado",systemImage:"chart.pie",description:Text("Gastos pagos ou na fatura aparecerão aqui."))
                                 .frame(height:220)
                         } else {
                             VStack(alignment:.leading,spacing:8) {
-                                Text("Pagos, pagos antecipadamente e na fatura • Total \(AppFormat.money(totalCategorySpending, hidden: hideAmounts))")
+                                Text("Pagos, pagos antecipadamente e na fatura • Total \(AppFormat.money(totalCategorySpending,hidden:hideAmounts))")
                                     .font(.caption).foregroundStyle(.secondary)
                                 HStack(spacing:20) {
                                     Chart(spendingByCategory) { item in
@@ -168,13 +160,24 @@ struct DashboardView: View {
                                     GroupBox {
                                         if let selected=spendingByCategory.first(where:{$0.category == hoveredCategory}) {
                                             VStack(alignment:.leading,spacing:7) {
-                                                HStack { Text(selected.category).font(.headline);Spacer();Text(AppFormat.money(selected.total, hidden: hideAmounts)).font(.headline).monospacedDigit() }
+                                                HStack {
+                                                    Text(selected.category).font(.headline)
+                                                    Spacer()
+                                                    Text(AppFormat.money(selected.total,hidden:hideAmounts)).font(.headline).monospacedDigit()
+                                                }
                                                 Text("\(Int((selected.total/totalCategorySpending*100).rounded()))% do total").font(.caption).foregroundStyle(.secondary)
                                                 Divider()
                                                 ScrollView {
                                                     VStack(spacing:6) {
                                                         ForEach(selected.items) { expense in
-                                                            HStack { VStack(alignment:.leading){Text(expense.description);Text(expense.status.rawValue).font(.caption).foregroundStyle(.secondary)};Spacer();Text(AppFormat.money(expense.amount, hidden: hideAmounts)).monospacedDigit() }
+                                                            HStack {
+                                                                VStack(alignment:.leading) {
+                                                                    Text(expense.description)
+                                                                    Text(expense.status.rawValue).font(.caption).foregroundStyle(.secondary)
+                                                                }
+                                                                Spacer()
+                                                                Text(AppFormat.money(expense.amount,hidden:hideAmounts)).monospacedDigit()
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -186,17 +189,6 @@ struct DashboardView: View {
                                 }
                             }.padding(8)
                         }
-                    }
-                    GroupBox("Orçamento para gastos variáveis") {
-                        HStack {
-                            CalculationItem("Renda prevista", store.totals.fixedExpected)
-                            Image(systemName: "minus")
-                            CalculationItem("Gastos previstos", store.totals.recurringExpected)
-                            Image(systemName: "minus")
-                            CalculationItem("Meta de investimento", store.totals.investmentsPlanned)
-                            Image(systemName: "equal")
-                            CalculationItem("Disponível", store.totals.variableBudget, emphasized: true)
-                        }.padding(8)
                     }
                 }.padding(24)
             }.sheet(isPresented: $editingBalance) { MonthEditor(month: month) }
@@ -210,6 +202,30 @@ struct DashboardView: View {
             if angleValue <= accumulated { return item.category }
         }
         return spendingByCategory.last?.category
+    }
+}
+
+struct NextSalaryCard:View {
+    @Environment(\.hideAmounts) private var hideAmounts
+    let salary:NextSalary?
+    var body:some View {
+        GroupBox {
+            HStack(alignment:.top) {
+                Image(systemName:"calendar.badge.clock").foregroundStyle(.blue).font(.largeTitle)
+                VStack(alignment:.leading,spacing:6) {
+                    Text("Próximo salário").font(.subheadline).foregroundStyle(.secondary)
+                    if let salary {
+                        Text(salary.days == 0 ? "Hoje" : "Em \(salary.days) \(salary.days == 1 ? "dia" : "dias")")
+                            .font(.title.bold())
+                        Text("\(AppFormat.money(salary.amount,hidden:hideAmounts)) • \(AppFormat.date.string(from:salary.date))")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                    } else {
+                        Text("Nenhum pendente").font(.title2.bold())
+                    }
+                }
+                Spacer()
+            }.padding(.vertical,10).frame(maxWidth:.infinity,alignment:.leading)
+        }.frame(maxWidth:.infinity)
     }
 }
 
@@ -238,13 +254,6 @@ struct MetricCard: View {
         }
         .frame(maxWidth: .infinity)
     }
-}
-
-struct CalculationItem: View {
-    @Environment(\.hideAmounts) private var hideAmounts
-    let title:String; let value:Double; var emphasized=false
-    init(_ title:String,_ value:Double,emphasized:Bool=false){self.title=title;self.value=value;self.emphasized=emphasized}
-    var body: some View { VStack(alignment:.leading){Text(title).font(.caption).foregroundStyle(.secondary);Text(AppFormat.money(value, hidden: hideAmounts)).font(emphasized ? .headline.bold() : .headline)}.frame(maxWidth:.infinity,alignment:.leading) }
 }
 
 struct MonthEditor: View {

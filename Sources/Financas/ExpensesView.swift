@@ -70,7 +70,7 @@ struct ExpensesView: View {
             Menu {
                 ForEach(ExpenseStatus.allCases) { status in Button(status.rawValue) { var copy=item;copy.status=status;store.save(copy) } }
                 if [.paid,.prepaid].contains(item.status) && !item.includedInInitialBalance { Button("Já estava no saldo inicial") { var copy=item;copy.includedInInitialBalance=true;store.save(copy) } }
-                Divider();Button("Editar"){editing=item};Button("Excluir",role:.destructive){store.delete(item)}
+                Divider();Button(item.isRecurring ? "Editar somente neste mês" : "Editar"){editing=item};Button(item.isRecurring ? "Excluir somente deste mês" : "Excluir",role:.destructive){store.delete(item)}
             } label:{Image(systemName:"ellipsis.circle")}
         }.contentShape(Rectangle()).onTapGesture{editing=item}
     }
@@ -99,6 +99,7 @@ struct ExpenseEditor: View {
             if hasCompetence { HStack { TextField("Mês",value:$item.competenceMonth,format:.number);TextField("Ano",value:$item.competenceYear,format:.number) } }
             Toggle("Já estava incluído no saldo inicial",isOn:$item.includedInInitialBalance)
             Text("Ative para pagamentos anteriores ao saldo informado. O lançamento mantém o status, mas não será descontado novamente.").font(.caption).foregroundStyle(.secondary)
+            if item.isRecurring { Text("Valor, status e demais alterações valem somente para este mês. A recorrência dos próximos meses permanece inalterada.").font(.caption).foregroundStyle(.secondary) }
             TextField("Observação",text:$item.notes,axis:.vertical).lineLimit(2...4)
             EditorButtons(saveEnabled:!item.description.isEmpty && item.amount >= 0){if !hasCompetence{item.competenceMonth=nil;item.competenceYear=nil};store.save(item);dismiss()}
         }.padding().frame(width:450).navigationTitle(item.id == 0 ? "Nova saída" : "Editar lançamento")

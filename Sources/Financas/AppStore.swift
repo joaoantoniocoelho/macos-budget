@@ -9,6 +9,8 @@ final class AppStore: ObservableObject {
     @Published var expenses: [Expense] = []
     @Published var recurring: [RecurringExpense] = []
     @Published var investments: [Investment] = []
+    @Published var investmentFunds: [InvestmentFund] = []
+    @Published var investmentMovements: [InvestmentMovement] = []
     @Published var errorMessage: String?
 
     let database: Database
@@ -38,8 +40,34 @@ final class AppStore: ObservableObject {
         t.variable = expenses.filter { !$0.isRecurring }.reduce(0) { $0 + $1.amount }
         t.paidVariable = expenses.filter { !$0.isRecurring && [.paid,.prepaid].contains($0.status) }.reduce(0) { $0 + $1.amount }
         t.investmentsPlanned = investments.reduce(0) { $0 + $1.plannedAmount }
-        t.investmentsActual = investments.filter { $0.status == .completed }.reduce(0) { $0 + $1.actualAmount }
+        t.investmentsActual = investmentMovements.filter { $0.kind == .contribution }.reduce(0) { $0 + $1.amount }
         return t
+    }
+
+    var totalInvested:Double { investmentFunds.reduce(0) { $0 + $1.currentBalance } }
+    var emergencyReserve:InvestmentFund? { investmentFunds.first(where:\.isEmergencyReserve) }
+    var monthlyFixedExpenseBaseline:Double { recurring.filter(\.active).reduce(0) { $0 + $1.amount } }
+    var emergencyReserveMonths:Double {
+        guard monthlyFixedExpenseBaseline > 0 else { return 0 }
+        return (emergencyReserve?.currentBalance ?? 0) / monthlyFixedExpenseBaseline
+    }
+
+    func nextSalary(referenceDate:Date = .now) -> NextSalary? {
+        guard let month=selectedMonth else { return nil }
+        let calendar=Calendar(identifier:.gregorian)
+        let reference=calendar.startOfDay(for:referenceDate)
+        let candidates=incomes.compactMap { income -> (Income,Date)? in
+            guard income.isFixed,income.status == .pending else { return nil }
+            if let date=income.date { return (income,calendar.startOfDay(for:date)) }
+            guard let day=income.expectedDay,
+                  let start=calendar.date(from:DateComponents(year:month.year,month:month.month,day:1)),
+                  let range=calendar.range(of:.day,in:.month,for:start),
+                  let date=calendar.date(from:DateComponents(year:month.year,month:month.month,day:min(max(day,1),range.count))) else { return nil }
+            return (income,date)
+        }.filter { $0.1 >= reference }.sorted { $0.1 < $1.1 }
+        guard let next=candidates.first else { return nil }
+        let days=calendar.dateComponents([.day],from:reference,to:next.1).day ?? 0
+        return NextSalary(date:next.1,amount:next.0.amount,description:next.0.description,days:days)
     }
 
     func reloadAll(selectLatest: Bool = false) {
@@ -47,15 +75,18 @@ final class AppStore: ObservableObject {
             months = try database.months()
             if selectLatest || !months.contains(where: { $0.id == selectedMonthID }) { selectedMonthID = months.last?.id }
             recurring = try database.recurringExpenses()
+            investmentFunds = try database.investmentFunds()
             try reloadMonth()
         }
     }
 
     func reloadMonth() throws {
-        guard let id = selectedMonthID else { incomes=[]; expenses=[]; investments=[]; return }
+        guard let id = selectedMonthID else { incomes=[]; expenses=[]; investments=[]; investmentMovements=[]; return }
         incomes = try database.incomes(monthID: id)
         expenses = try database.expenses(monthID: id)
         investments = try database.investments(monthID: id)
+        investmentMovements = try database.investmentMovements(monthID:id)
+        investmentFunds = try database.investmentFunds()
     }
 
     private func refreshCurrentMonth() throws {
@@ -85,6 +116,8 @@ final class AppStore: ObservableObject {
     func delete(_ value: Expense) { perform { try database.deleteExpense(value.id); try refreshCurrentMonth() } }
     func save(_ value: Investment) { perform { try database.saveInvestment(value); try refreshCurrentMonth() } }
     func delete(_ value: Investment) { perform { try database.deleteInvestment(value.id); try refreshCurrentMonth() } }
+    func save(_ value:InvestmentMovement) { perform { try database.saveInvestmentMovement(value); try refreshCurrentMonth() } }
+    func delete(_ value:InvestmentMovement) { perform { try database.deleteInvestmentMovement(value.id); try refreshCurrentMonth() } }
     func save(_ value: RecurringExpense, addToCurrentMonth: Bool = false) {
         perform {
             let recurringID = try database.saveRecurring(value)

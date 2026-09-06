@@ -106,6 +106,37 @@ struct Investment: Identifiable {
     var status: InvestmentStatus
 }
 
+struct InvestmentFund: Identifiable, Hashable {
+    var id: Int64
+    var name: String
+    var openingBalance: Double
+    var currentBalance: Double
+    var isEmergencyReserve: Bool
+}
+
+enum InvestmentMovementKind: String, CaseIterable, Identifiable {
+    case contribution = "Aporte"
+    case withdrawal = "Resgate"
+    var id: String { rawValue }
+}
+
+struct InvestmentMovement: Identifiable {
+    var id: Int64
+    var monthID: Int64
+    var fundID: Int64
+    var date: Date
+    var kind: InvestmentMovementKind
+    var amount: Double
+    var notes: String
+}
+
+struct NextSalary {
+    var date: Date
+    var amount: Double
+    var description: String
+    var days: Int
+}
+
 struct DashboardTotals {
     var initialBalance = 0.0
     var fixedExpected = 0.0

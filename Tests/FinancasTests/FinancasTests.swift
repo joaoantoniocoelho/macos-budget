@@ -6,6 +6,51 @@ final class FinancasTests: XCTestCase {
         let database = try makeDatabase()
         XCTAssertTrue(try database.months().isEmpty)
         XCTAssertTrue(try database.recurringExpenses().isEmpty)
+        let funds=try database.investmentFunds()
+        XCTAssertEqual(funds.count,2)
+        XCTAssertEqual(funds.reduce(0){$0+$1.currentBalance},10822.01,accuracy:0.001)
+        XCTAssertEqual(try XCTUnwrap(funds.first(where:\.isEmergencyReserve)).currentBalance,8532.58,accuracy:0.001)
+    }
+
+    func testInvestmentMovementsUpdateFundAndAccountBalances() throws {
+        let database=try makeDatabase()
+        let monthID=try database.createMonth(year:2026,month:9,initialBalance:2000)
+        let occam=try XCTUnwrap(database.investmentFunds().first(where:\.isEmergencyReserve))
+
+        try database.saveInvestmentMovement(InvestmentMovement(id:0,monthID:monthID,fundID:occam.id,date:date(2026,9,6),kind:.contribution,amount:500,notes:"Aporte mensal"))
+        XCTAssertEqual(try XCTUnwrap(database.months().first).currentBalance,1500,accuracy:0.001)
+        XCTAssertEqual(try XCTUnwrap(database.investmentFunds().first(where:{$0.id == occam.id})).currentBalance,9032.58,accuracy:0.001)
+
+        var movement=try XCTUnwrap(database.investmentMovements(monthID:monthID).first)
+        movement.kind = .withdrawal
+        movement.amount = 200
+        try database.saveInvestmentMovement(movement)
+        XCTAssertEqual(try XCTUnwrap(database.months().first).currentBalance,2200,accuracy:0.001)
+        XCTAssertEqual(try XCTUnwrap(database.investmentFunds().first(where:{$0.id == occam.id})).currentBalance,8332.58,accuracy:0.001)
+
+        try database.deleteInvestmentMovement(movement.id)
+        XCTAssertEqual(try XCTUnwrap(database.months().first).currentBalance,2000,accuracy:0.001)
+        XCTAssertEqual(try XCTUnwrap(database.investmentFunds().first(where:{$0.id == occam.id})).currentBalance,8532.58,accuracy:0.001)
+    }
+
+    func testInvestmentWithdrawalCannotExceedFundBalance() throws {
+        let database=try makeDatabase()
+        let monthID=try database.createMonth(year:2026,month:9,initialBalance:2000)
+        let fund=try XCTUnwrap(database.investmentFunds().last)
+        XCTAssertThrowsError(try database.saveInvestmentMovement(InvestmentMovement(id:0,monthID:monthID,fundID:fund.id,date:date(2026,9,6),kind:.withdrawal,amount:3000,notes:"")))
+        XCTAssertEqual(try XCTUnwrap(database.months().first).currentBalance,2000,accuracy:0.001)
+    }
+
+    @MainActor
+    func testNextSalaryUsesNearestPendingFixedIncome() throws {
+        let database=try makeDatabase()
+        let monthID=try database.createMonth(year:2026,month:9)
+        try database.saveIncome(Income(id:0,monthID:monthID,date:nil,description:"Salário dia 15",category:"Salário",amount:5200,expectedDay:15,status:.pending,isFixed:true))
+        try database.saveIncome(Income(id:0,monthID:monthID,date:nil,description:"Salário dia 30",category:"Salário",amount:3700,expectedDay:30,status:.pending,isFixed:true))
+        let store=AppStore(database:database)
+        let salary=try XCTUnwrap(store.nextSalary(referenceDate:date(2026,9,6)))
+        XCTAssertEqual(salary.days,9)
+        XCTAssertEqual(salary.amount,5200,accuracy:0.001)
     }
 
     func testPayInvoiceMovesCardChargesToPaid() throws {
@@ -26,6 +71,45 @@ final class FinancasTests: XCTestCase {
         XCTAssertEqual(try database.expenses(monthID: id).filter(\.isRecurring).count, 1)
         XCTAssertEqual(try database.expenses(monthID: id).first?.description, "Aluguel")
         XCTAssertEqual(try database.expenses(monthID: id).first?.status, .pending)
+    }
+
+    func testNewMonthCopiesOnlyFixedIncomes() throws {
+        let database = try makeDatabase()
+        let september = try database.createMonth(year: 2026, month: 9)
+        try database.saveIncome(Income(id:0,monthID:september,date:nil,description:"Salário dia 15",category:"Salário",amount:5200,expectedDay:15,status:.received,isFixed:true))
+        try database.saveIncome(Income(id:0,monthID:september,date:date(2026,9,30),description:"PLR",category:"PLR",amount:9500,expectedDay:nil,status:.pending,isFixed:false))
+        let october = try database.createMonth(year: 2026, month: 10)
+        let incomes = try database.incomes(monthID:october)
+        XCTAssertEqual(incomes.count,1)
+        XCTAssertEqual(incomes.first?.description,"Salário dia 15")
+        XCTAssertEqual(incomes.first?.status,.pending)
+        XCTAssertNil(incomes.first?.date)
+    }
+
+    func testNewMonthCopiesInvestmentPlanAsPending() throws {
+        let database=try makeDatabase()
+        let september=try database.createMonth(year:2026,month:9)
+        try database.saveInvestment(Investment(id:0,monthID:september,plannedDate:date(2026,9,15),plannedAmount:1500,actualAmount:1500,status:.completed))
+        try database.saveInvestment(Investment(id:0,monthID:september,plannedDate:date(2026,9,30),plannedAmount:1500,actualAmount:0,status:.pending))
+        let october=try database.createMonth(year:2026,month:10)
+        let plans=try database.investments(monthID:october)
+        XCTAssertEqual(plans.count,2)
+        XCTAssertEqual(plans.reduce(0){$0+$1.plannedAmount},3000,accuracy:0.001)
+        XCTAssertTrue(plans.allSatisfy{$0.status == .pending && $0.actualAmount == 0})
+        XCTAssertEqual(Calendar(identifier:.gregorian).component(.month,from:plans[0].plannedDate),10)
+    }
+
+    func testDeletingRecurringExpenseRemovesOnlyCurrentMonthAndDoesNotResync() throws {
+        let database = try makeDatabase()
+        try database.saveRecurring(RecurringExpense(id: 0, description: "Aluguel", category: "Moradia", amount: 1000, dueDay: nil, paymentMethod: .pix, notes: "", active: true))
+        let september = try database.createMonth(year: 2026, month: 9)
+        let expense = try XCTUnwrap(database.expenses(monthID: september).first)
+        try database.deleteExpense(expense.id)
+        XCTAssertTrue(try database.expenses(monthID: september).isEmpty)
+        try database.instantiateRecurring(monthID: september)
+        XCTAssertTrue(try database.expenses(monthID: september).isEmpty)
+        let october = try database.createMonth(year: 2026, month: 10)
+        XCTAssertEqual(try database.expenses(monthID: october).first?.description, "Aluguel")
     }
 
     func testCardRecurringExpenseStartsPending() throws {
@@ -130,6 +214,14 @@ final class FinancasTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(database.expenses(monthID: monthID).first { $0.description == "Aluguel" }).status, .pending)
         XCTAssertEqual(try XCTUnwrap(database.expenses(monthID: monthID).first { $0.description == "Sem dia" }).status, .pending)
         XCTAssertEqual(try XCTUnwrap(database.months().first).currentBalance, 2000, accuracy: 0.001)
+    }
+
+    func testCardDueBeforeBalanceSnapshotStaysPending() throws {
+        let today = date(2026, 9, 5)
+        let database = try makeDatabase(today: today)
+        try database.saveRecurring(RecurringExpense(id: 0, description: "Cartão antigo", category: "Assinaturas", amount: 90, dueDay: 2, paymentMethod: .card, notes: "", active: true))
+        let monthID = try database.createMonth(year: 2026, month: 9, initialBalance: 1812.36, balanceDate: today)
+        XCTAssertEqual(try database.expenses(monthID: monthID).first?.status, .pending)
     }
 
     func testCardRecurringStaysPendingBeforeDueDay() throws {

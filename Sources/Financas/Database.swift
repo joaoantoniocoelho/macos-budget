@@ -24,6 +24,7 @@ final class Database {
         try execute("PRAGMA foreign_keys = ON")
         try migrate()
         try seedIfNeeded()
+        try seedInvestmentFundsIfNeeded()
         try applyDueCardInvoices(on: today)
     }
 
@@ -59,7 +60,8 @@ final class Database {
           payment_method TEXT NOT NULL, status TEXT NOT NULL,
           competence_year INTEGER, competence_month INTEGER, notes TEXT NOT NULL DEFAULT '',
           is_recurring INTEGER NOT NULL DEFAULT 0, balance_applied INTEGER NOT NULL DEFAULT 0,
-          included_in_initial_balance INTEGER NOT NULL DEFAULT 0
+          included_in_initial_balance INTEGER NOT NULL DEFAULT 0,
+          excluded INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS investments (
           id INTEGER PRIMARY KEY, month_id INTEGER NOT NULL REFERENCES months(id) ON DELETE CASCADE,
@@ -69,6 +71,19 @@ final class Database {
         );
         CREATE TABLE IF NOT EXISTS categories (
           id INTEGER PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, UNIQUE(name, kind)
+        );
+        CREATE TABLE IF NOT EXISTS investment_funds (
+          id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+          opening_balance REAL NOT NULL DEFAULT 0,
+          is_emergency_reserve INTEGER NOT NULL DEFAULT 0,
+          active INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE TABLE IF NOT EXISTS investment_movements (
+          id INTEGER PRIMARY KEY,
+          month_id INTEGER NOT NULL REFERENCES months(id) ON DELETE CASCADE,
+          fund_id INTEGER NOT NULL REFERENCES investment_funds(id) ON DELETE RESTRICT,
+          date TEXT NOT NULL, kind TEXT NOT NULL, amount REAL NOT NULL,
+          notes TEXT NOT NULL DEFAULT '', balance_applied INTEGER NOT NULL DEFAULT 1
         );
         """)
         if try !hasColumn("current_balance", in: "months") {
@@ -80,6 +95,9 @@ final class Database {
         }
         if try !hasColumn("included_in_initial_balance", in: "monthly_expenses") {
             try execute("ALTER TABLE monthly_expenses ADD COLUMN included_in_initial_balance INTEGER NOT NULL DEFAULT 0")
+        }
+        if try !hasColumn("excluded", in: "monthly_expenses") {
+            try execute("ALTER TABLE monthly_expenses ADD COLUMN excluded INTEGER NOT NULL DEFAULT 0")
         }
     }
 
@@ -162,7 +180,43 @@ final class Database {
         try execute("INSERT INTO months(year, month, initial_balance, current_balance, balance_date) VALUES(?,?,?,?,?)", bindings: [year, month, initialBalance, initialBalance, balanceDate])
         let id = sqlite3_last_insert_rowid(handle)
         try instantiateRecurring(monthID: id)
+        try copyFixedIncomes(to: id)
+        try copyInvestmentPlans(to: id, year: year, month: month)
         return id
+    }
+
+    private func copyFixedIncomes(to monthID: Int64) throws {
+        try execute("""
+        INSERT INTO income_entries(month_id,date,description,category,amount,expected_day,status,is_fixed,balance_applied)
+        SELECT ?,NULL,i.description,i.category,i.amount,i.expected_day,'A receber',1,0
+        FROM income_entries i
+        WHERE i.is_fixed=1
+          AND i.month_id=(
+            SELECT id FROM months WHERE id<>? ORDER BY year DESC,month DESC LIMIT 1
+          )
+          AND NOT EXISTS(
+            SELECT 1 FROM income_entries existing
+            WHERE existing.month_id=? AND existing.is_fixed=1
+              AND existing.description=i.description AND existing.expected_day=i.expected_day
+          )
+        """, bindings:[monthID,monthID,monthID])
+    }
+
+    private func copyInvestmentPlans(to monthID: Int64, year: Int, month: Int) throws {
+        var plans:[(day:Int,amount:Double)] = []
+        try rows("""
+        SELECT CAST(strftime('%d',planned_date) AS INTEGER),planned_amount
+        FROM investments
+        WHERE month_id=(SELECT id FROM months WHERE id<>? ORDER BY year DESC,month DESC LIMIT 1)
+        ORDER BY planned_date
+        """,bindings:[monthID]) { statement in
+            plans.append((Int(sqlite3_column_int(statement,0)),sqlite3_column_double(statement,1)))
+        }
+        let calendar=Calendar(identifier:.gregorian)
+        for plan in plans {
+            guard let plannedDate=Self.date(year:year,month:month,day:plan.day,calendar:calendar) else { continue }
+            try saveInvestment(Investment(id:0,monthID:monthID,plannedDate:plannedDate,plannedAmount:plan.amount,actualAmount:0,status:.pending))
+        }
     }
 
     func updateMonth(_ month: BudgetMonth) throws {
@@ -229,7 +283,7 @@ final class Database {
 
     func expenses(monthID: Int64) throws -> [Expense] {
         var result: [Expense] = []
-        try rows("SELECT id,month_id,recurring_id,date,description,category,amount,payment_method,status,competence_year,competence_month,notes,is_recurring,included_in_initial_balance FROM monthly_expenses WHERE month_id=? ORDER BY is_recurring DESC, COALESCE(date,''), description", bindings: [monthID]) { s in
+        try rows("SELECT id,month_id,recurring_id,date,description,category,amount,payment_method,status,competence_year,competence_month,notes,is_recurring,included_in_initial_balance FROM monthly_expenses WHERE month_id=? AND excluded=0 ORDER BY is_recurring DESC, COALESCE(date,''), description", bindings: [monthID]) { s in
             result.append(Expense(id: sqlite3_column_int64(s,0), monthID: sqlite3_column_int64(s,1), recurringID: sqlite3_column_type(s,2) == SQLITE_NULL ? nil : sqlite3_column_int64(s,2), date: optionalDate(s,3), description: text(s,4), category: text(s,5), amount: sqlite3_column_double(s,6), paymentMethod: PaymentMethod(rawValue: text(s,7)) ?? .pix, status: ExpenseStatus(rawValue: text(s,8)) ?? .pending, competenceYear: optionalInt(s,9), competenceMonth: optionalInt(s,10), notes: text(s,11), isRecurring: sqlite3_column_int(s,12) != 0, includedInInitialBalance: sqlite3_column_int(s,13) != 0))
         }
         return result
@@ -252,9 +306,16 @@ final class Database {
         try adjustBalance(monthID: item.monthID, by: newEffect - oldEffect)
         try execute("UPDATE monthly_expenses SET balance_applied=? WHERE id=?",bindings:[newEffect != 0,savedID])
     }
+
     func deleteExpense(_ id: Int64) throws {
         let (monthID, effect) = try expenseBalanceRecord(id: id)
-        try execute("DELETE FROM monthly_expenses WHERE id=?", bindings: [id])
+        var recurring = false
+        try rows("SELECT is_recurring FROM monthly_expenses WHERE id=?", bindings: [id]) { recurring = sqlite3_column_int($0, 0) != 0 }
+        if recurring {
+            try execute("UPDATE monthly_expenses SET excluded=1,balance_applied=0 WHERE id=?", bindings: [id])
+        } else {
+            try execute("DELETE FROM monthly_expenses WHERE id=?", bindings: [id])
+        }
         try adjustBalance(monthID: monthID, by: -effect)
     }
     func payInvoice(monthID: Int64) throws {
@@ -290,6 +351,97 @@ final class Database {
         try adjustBalance(monthID: monthID, by: -effect)
     }
 
+    func investmentFunds() throws -> [InvestmentFund] {
+        var result:[InvestmentFund] = []
+        try rows("""
+        SELECT f.id,f.name,f.opening_balance,f.is_emergency_reserve,
+               f.opening_balance + COALESCE(SUM(CASE m.kind WHEN 'Aporte' THEN m.amount ELSE -m.amount END),0)
+        FROM investment_funds f
+        LEFT JOIN investment_movements m ON m.fund_id=f.id
+        WHERE f.active=1
+        GROUP BY f.id
+        ORDER BY f.is_emergency_reserve DESC,f.id
+        """) { s in
+            result.append(InvestmentFund(
+                id:sqlite3_column_int64(s,0), name:text(s,1), openingBalance:sqlite3_column_double(s,2),
+                currentBalance:sqlite3_column_double(s,4), isEmergencyReserve:sqlite3_column_int(s,3) != 0
+            ))
+        }
+        return result
+    }
+
+    func investmentMovements(monthID:Int64) throws -> [InvestmentMovement] {
+        var result:[InvestmentMovement] = []
+        try rows("SELECT id,month_id,fund_id,date,kind,amount,notes FROM investment_movements WHERE month_id=? ORDER BY date DESC,id DESC",bindings:[monthID]) { s in
+            result.append(InvestmentMovement(
+                id:sqlite3_column_int64(s,0), monthID:sqlite3_column_int64(s,1), fundID:sqlite3_column_int64(s,2),
+                date:optionalDate(s,3) ?? .now, kind:InvestmentMovementKind(rawValue:text(s,4)) ?? .contribution,
+                amount:sqlite3_column_double(s,5), notes:text(s,6)
+            ))
+        }
+        return result
+    }
+
+    func saveInvestmentMovement(_ item:InvestmentMovement) throws {
+        guard item.amount > 0 else { throw DatabaseError.message("Informe um valor maior que zero.") }
+        let old = item.id == 0 ? nil : try investmentMovementRecord(id:item.id)
+        let oldFundEffect = old.map { fundEffect(kind:$0.kind,amount:$0.amount) } ?? 0
+        let newFundEffect = fundEffect(kind:item.kind,amount:item.amount)
+        let available = try investmentFundBalance(id:item.fundID) - (old?.fundID == item.fundID ? oldFundEffect : 0)
+        guard available + newFundEffect >= -0.000_001 else {
+            throw DatabaseError.message("O resgate é maior que o saldo disponível nesse fundo.")
+        }
+
+        try execute("BEGIN")
+        do {
+            if let old {
+                try adjustBalance(monthID:old.monthID,by:-accountEffect(kind:old.kind,amount:old.amount))
+                try execute("UPDATE investment_movements SET month_id=?,fund_id=?,date=?,kind=?,amount=?,notes=?,balance_applied=1 WHERE id=?",bindings:[item.monthID,item.fundID,item.date,item.kind.rawValue,item.amount,item.notes,item.id])
+            } else {
+                try execute("INSERT INTO investment_movements(month_id,fund_id,date,kind,amount,notes,balance_applied) VALUES(?,?,?,?,?,?,1)",bindings:[item.monthID,item.fundID,item.date,item.kind.rawValue,item.amount,item.notes])
+            }
+            try adjustBalance(monthID:item.monthID,by:accountEffect(kind:item.kind,amount:item.amount))
+            try execute("COMMIT")
+        } catch {
+            try? execute("ROLLBACK")
+            throw error
+        }
+    }
+
+    func deleteInvestmentMovement(_ id:Int64) throws {
+        let old = try investmentMovementRecord(id:id)
+        try execute("BEGIN")
+        do {
+            try execute("DELETE FROM investment_movements WHERE id=?",bindings:[id])
+            try adjustBalance(monthID:old.monthID,by:-accountEffect(kind:old.kind,amount:old.amount))
+            try execute("COMMIT")
+        } catch {
+            try? execute("ROLLBACK")
+            throw error
+        }
+    }
+
+    private func investmentFundBalance(id:Int64) throws -> Double {
+        var value = 0.0
+        try rows("""
+        SELECT f.opening_balance + COALESCE(SUM(CASE m.kind WHEN 'Aporte' THEN m.amount ELSE -m.amount END),0)
+        FROM investment_funds f LEFT JOIN investment_movements m ON m.fund_id=f.id WHERE f.id=? GROUP BY f.id
+        """,bindings:[id]) { value=sqlite3_column_double($0,0) }
+        return value
+    }
+
+    private func investmentMovementRecord(id:Int64) throws -> (monthID:Int64,fundID:Int64,kind:InvestmentMovementKind,amount:Double) {
+        var value:(Int64,Int64,InvestmentMovementKind,Double)?
+        try rows("SELECT month_id,fund_id,kind,amount FROM investment_movements WHERE id=?",bindings:[id]) { s in
+            value=(sqlite3_column_int64(s,0),sqlite3_column_int64(s,1),InvestmentMovementKind(rawValue:text(s,2)) ?? .contribution,sqlite3_column_double(s,3))
+        }
+        guard let value else { throw DatabaseError.message("Movimentação não encontrada.") }
+        return value
+    }
+
+    private func fundEffect(kind:InvestmentMovementKind,amount:Double)->Double { kind == .contribution ? amount : -amount }
+    private func accountEffect(kind:InvestmentMovementKind,amount:Double)->Double { kind == .contribution ? -amount : amount }
+
     private func adjustBalance(monthID: Int64, by delta: Double) throws {
         guard abs(delta) > 0.000_001 else { return }
         try execute("UPDATE months SET current_balance=current_balance+? WHERE id=?", bindings:[delta,monthID])
@@ -319,6 +471,14 @@ final class Database {
         }
     }
 
+    private func seedInvestmentFundsIfNeeded() throws {
+        var count=0
+        try rows("SELECT COUNT(*) FROM investment_funds") { count=Int(sqlite3_column_int($0,0)) }
+        guard count == 0 else { return }
+        try execute("INSERT INTO investment_funds(name,opening_balance,is_emergency_reserve) VALUES(?,?,1)",bindings:["Occam Liquidez FIC FIF RF CP RL",8532.58])
+        try execute("INSERT INTO investment_funds(name,opening_balance,is_emergency_reserve) VALUES(?,?,0)",bindings:["Vinland Incentivado Debêntures",2289.43])
+    }
+
     func replaceDatabase(with source: URL) throws {
         guard source.standardizedFileURL != url.standardizedFileURL else { return }
         var candidate: OpaquePointer?
@@ -345,6 +505,7 @@ final class Database {
         guard sqlite3_open(url.path, &handle) == SQLITE_OK else { throw DatabaseError.message("Backup inválido ou ilegível.") }
         try execute("PRAGMA foreign_keys = ON")
         try migrate()
+        try seedInvestmentFundsIfNeeded()
         try applyDueCardInvoices(on: today)
     }
 
@@ -359,6 +520,7 @@ final class Database {
             for expense in try expenses(monthID: month.id) {
                 guard expense.status == .pending, expense.paymentMethod == .card, let recurringID = expense.recurringID, let dueDay = dueDayByRecurringID[recurringID] else { continue }
                 guard let dueDate = Self.date(year: month.year, month: month.month, day: dueDay, calendar: calendar) else { continue }
+                if let balanceDate = month.balanceDate, calendar.startOfDay(for: dueDate) < calendar.startOfDay(for: balanceDate) { continue }
                 guard today >= calendar.startOfDay(for: dueDate) else { continue }
                 try execute("UPDATE monthly_expenses SET status='Na fatura', date=COALESCE(date,?) WHERE id=?", bindings: [dueDate, expense.id])
             }
