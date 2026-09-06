@@ -4,6 +4,7 @@
   <key>CFBundleDevelopmentRegion</key><string>pt_BR</string>
   <key>CFBundleExecutable</key><string>Financas</string>
   <key>CFBundleIdentifier</key><string>local.financas.app</string>
+  <key>CFBundleIconFile</key><string>AppIcon.icns</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>Finanças</string>
   <key>CFBundlePackageType</key><string>APPL</string>
