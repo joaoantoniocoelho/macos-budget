@@ -76,6 +76,7 @@ final class Database {
           id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
           opening_balance REAL NOT NULL DEFAULT 0,
           is_emergency_reserve INTEGER NOT NULL DEFAULT 0,
+          counts_as_investment INTEGER NOT NULL DEFAULT 1,
           active INTEGER NOT NULL DEFAULT 1
         );
         CREATE TABLE IF NOT EXISTS investment_movements (
@@ -99,6 +100,10 @@ final class Database {
         if try !hasColumn("excluded", in: "monthly_expenses") {
             try execute("ALTER TABLE monthly_expenses ADD COLUMN excluded INTEGER NOT NULL DEFAULT 0")
         }
+        if try !hasColumn("counts_as_investment", in:"investment_funds") {
+            try execute("ALTER TABLE investment_funds ADD COLUMN counts_as_investment INTEGER NOT NULL DEFAULT 1")
+        }
+        try execute("UPDATE investment_funds SET counts_as_investment=0 WHERE lower(name)=lower('Viagem')")
     }
 
     private func hasColumn(_ column: String, in table: String) throws -> Bool {
@@ -354,7 +359,7 @@ final class Database {
     func investmentFunds() throws -> [InvestmentFund] {
         var result:[InvestmentFund] = []
         try rows("""
-        SELECT f.id,f.name,f.opening_balance,f.is_emergency_reserve,
+        SELECT f.id,f.name,f.opening_balance,f.is_emergency_reserve,f.counts_as_investment,
                f.opening_balance + COALESCE(SUM(CASE m.kind WHEN 'Aporte' THEN m.amount ELSE -m.amount END),0)
         FROM investment_funds f
         LEFT JOIN investment_movements m ON m.fund_id=f.id
@@ -364,7 +369,8 @@ final class Database {
         """) { s in
             result.append(InvestmentFund(
                 id:sqlite3_column_int64(s,0), name:text(s,1), openingBalance:sqlite3_column_double(s,2),
-                currentBalance:sqlite3_column_double(s,4), isEmergencyReserve:sqlite3_column_int(s,3) != 0
+                currentBalance:sqlite3_column_double(s,5), isEmergencyReserve:sqlite3_column_int(s,3) != 0,
+                countsAsInvestment:sqlite3_column_int(s,4) != 0
             ))
         }
         return result

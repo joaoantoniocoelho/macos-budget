@@ -112,6 +112,7 @@ struct InvestmentFund: Identifiable, Hashable {
     var openingBalance: Double
     var currentBalance: Double
     var isEmergencyReserve: Bool
+    var countsAsInvestment: Bool
 }
 
 enum InvestmentMovementKind: String, CaseIterable, Identifiable {

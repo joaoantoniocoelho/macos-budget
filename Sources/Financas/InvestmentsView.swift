@@ -25,7 +25,7 @@ struct InvestmentsView: View {
 
                     EmergencyReserveCard(fund:store.emergencyReserve,fixedExpenses:store.monthlyFixedExpenseBaseline,months:store.emergencyReserveMonths)
 
-                    GroupBox("Seus fundos") {
+                    GroupBox("Fundos e objetivos") {
                         LazyVGrid(columns:columns,spacing:12) {
                             ForEach(store.investmentFunds) { fund in FundCard(fund:fund) }
                         }.padding(6)
@@ -84,13 +84,14 @@ private struct FundCard:View {
     var body:some View {
         VStack(alignment:.leading,spacing:10) {
             HStack(alignment:.top) {
-                Image(systemName:fund.isEmergencyReserve ? "shield.fill" : "building.columns.fill")
+                Image(systemName:fund.isEmergencyReserve ? "shield.fill" : (fund.countsAsInvestment ? "building.columns.fill" : "airplane.departure"))
                     .foregroundStyle(fund.isEmergencyReserve ? .green : .accentColor)
                 Text(fund.name).font(.headline).lineLimit(2)
                 Spacer()
             }
             Text(AppFormat.money(fund.currentBalance,hidden:hideAmounts)).font(.title2.bold()).monospacedDigit()
-            Text(fund.isEmergencyReserve ? "Reserva de emergência" : "Fundo de investimento").font(.caption).foregroundStyle(.secondary)
+            Text(fund.isEmergencyReserve ? "Reserva de emergência" : (fund.countsAsInvestment ? "Fundo de investimento" : "Objetivo financeiro"))
+                .font(.caption).foregroundStyle(.secondary)
         }
         .padding(14).frame(maxWidth:.infinity,minHeight:120,alignment:.leading)
         .background(.quaternary.opacity(0.45),in:RoundedRectangle(cornerRadius:12))

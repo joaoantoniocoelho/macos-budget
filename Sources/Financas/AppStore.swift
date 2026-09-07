@@ -40,11 +40,12 @@ final class AppStore: ObservableObject {
         t.variable = expenses.filter { !$0.isRecurring }.reduce(0) { $0 + $1.amount }
         t.paidVariable = expenses.filter { !$0.isRecurring && [.paid,.prepaid].contains($0.status) }.reduce(0) { $0 + $1.amount }
         t.investmentsPlanned = investments.reduce(0) { $0 + $1.plannedAmount }
-        t.investmentsActual = investmentMovements.filter { $0.kind == .contribution }.reduce(0) { $0 + $1.amount }
+        let investmentFundIDs=Set(investmentFunds.filter(\.countsAsInvestment).map(\.id))
+        t.investmentsActual = investmentMovements.filter { $0.kind == .contribution && investmentFundIDs.contains($0.fundID) }.reduce(0) { $0 + $1.amount }
         return t
     }
 
-    var totalInvested:Double { investmentFunds.reduce(0) { $0 + $1.currentBalance } }
+    var totalInvested:Double { investmentFunds.filter(\.countsAsInvestment).reduce(0) { $0 + $1.currentBalance } }
     var emergencyReserve:InvestmentFund? { investmentFunds.first(where:\.isEmergencyReserve) }
     var monthlyFixedExpenseBaseline:Double { recurring.filter(\.active).reduce(0) { $0 + $1.amount } }
     var emergencyReserveMonths:Double {

@@ -53,6 +53,20 @@ final class FinancasTests: XCTestCase {
         XCTAssertEqual(salary.amount,5200,accuracy:0.001)
     }
 
+    @MainActor
+    func testFinancialGoalDoesNotCountAsInvestedValue() throws {
+        let database=try makeDatabase()
+        try database.execute("INSERT INTO investment_funds(name,opening_balance,is_emergency_reserve,counts_as_investment,active) VALUES('Viagem',8453,0,0,1)")
+        let monthID=try database.createMonth(year:2026,month:9,initialBalance:1000)
+        let travelID=try XCTUnwrap(database.investmentFunds().first(where:{$0.name == "Viagem"})?.id)
+        try database.saveInvestmentMovement(InvestmentMovement(id:0,monthID:monthID,fundID:travelID,date:date(2026,9,7),kind:.contribution,amount:100,notes:""))
+        let store=AppStore(database:database)
+        XCTAssertEqual(store.investmentFunds.count,3)
+        XCTAssertEqual(store.totalInvested,10822.01,accuracy:0.001)
+        XCTAssertEqual(store.totals.investmentsActual,0,accuracy:0.001)
+        XCTAssertEqual(store.investmentFunds.first(where:{$0.name == "Viagem"})?.countsAsInvestment,false)
+    }
+
     func testPayInvoiceMovesCardChargesToPaid() throws {
         let database = try makeDatabase()
         let monthID = try database.createMonth(year: 2026, month: 9)
